@@ -415,8 +415,8 @@ if __name__ == "__main__":
 
     print(f"Output to {answer_file}")
     
-    args.base_model_path = "/mnt/c/EAGLE-merge/models/"
-    args.ea_model_path = "/mnt/c/EAGLE-merge/models/pytorch_model.bin"
+    args.base_model_path = "/mnt/c/EAGLE-merge/models/torch-model/llama3-2/"
+    args.ea_model_path = "/mnt/c/EAGLE-merge/models/torch-model/eagel_draft/"
     args.temperature = 0
 
     run_eval(
