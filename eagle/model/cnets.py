@@ -28,6 +28,7 @@ import torch.utils.checkpoint
 from torch import nn
 
 from transformers.activations import ACT2FN
+import numpy as np
 
 
 try:
@@ -40,6 +41,78 @@ except:
     from choices import *
     from utils import prepare_logits_processor
 
+from torch.nn.functional import cosine_similarity, pairwise_distance
+
+
+def tensor_similarity(tensor1, tensor2, dim=-1):
+    """
+    计算两个张量之间的多种相似度度量。
+    
+    参数:
+    - tensor1: 第一个张量
+    - tensor2: 第二个张量
+    - dim: 计算相似度的维度，默认为最后一个维度
+    
+    返回:
+    - 一个字典，包含不同相似度度量的结果
+    """
+    if tensor1.shape != tensor2.shape:
+        raise ValueError("两个张量的形状必须相同")
+    
+    # 余弦相似度
+    cosine_sim = cosine_similarity(tensor1, tensor2, dim=dim).mean().item()
+    
+    # 欧几里得距离
+    euclidean_dist = pairwise_distance(tensor1, tensor2, p=2, eps=1e-6).mean().item()
+    
+    # 曼哈顿距离
+    manhattan_dist = pairwise_distance(tensor1, tensor2, p=1, eps=1e-6).mean().item()
+    
+    # 皮尔逊相关系数
+    def pearson_correlation(x, y, dim=dim):
+        x_mean = x.mean(dim, keepdim=True)
+        y_mean = y.mean(dim, keepdim=True)
+        x_centered = x - x_mean
+        y_centered = y - y_mean
+        cov = (x_centered * y_centered).mean(dim)
+        x_std = x_centered.pow(2).mean(dim).sqrt()
+        y_std = y_centered.pow(2).mean(dim).sqrt()
+        corr = cov / (x_std * y_std)
+        return corr
+    
+    pearson_corr = pearson_correlation(tensor1, tensor2, dim=dim).mean().item()
+    
+    return {
+        "cosine_similarity": cosine_sim,
+        "euclidean_distance": euclidean_dist,
+        "manhattan_distance": manhattan_dist,
+        "pearson_correlation": pearson_corr
+    }
+
+def compare_from_file(tensor, feat_name, feat_dir = "/mnt/c/EAGLE-merge/check_precision/cpp_hidden_feat", compare_type=torch.float32):
+    # feat_name = "eagle_before_output_54_times_3.bin" 
+    tmp_data = np.fromfile(os.path.join(feat_dir, feat_name), dtype=np.float32)  
+    tmp_data = tmp_data.reshape(tensor.shape)
+
+    cpp_feat = torch.tensor(tmp_data, dtype=compare_type) # 将NumPy数组转换为PyTorch张量   
+
+    host_device = torch.device("cpu")
+    py_feat = tensor.to(compare_type).to(host_device)
+
+    similarity_results = tensor_similarity(cpp_feat, py_feat)
+    print(similarity_results)
+
+def tensor_from_file(shape, feat_name, feat_dir = "/mnt/c/EAGLE-merge/check_precision/cpp_hidden_feat", compare_type=torch.float32):
+    # feat_name = "eagle_before_output_54_times_3.bin" 
+    tmp_data = np.fromfile(os.path.join(feat_dir, feat_name), dtype=np.float32)  
+    tmp_data = tmp_data.reshape(shape)
+    cpp_feat = torch.tensor(tmp_data, dtype=compare_type) # 将NumPy数组转换为PyTorch张量   
+    # host_device = torch.device("cpu")
+    return cpp_feat
+
+
+def get_tensor_from_file(path, shape):
+    print("")
 
 
 
@@ -468,6 +541,9 @@ def len_list(x, n):
     return [i for i in x if len(i) <= n]
 
 
+
+
+
 class Model(nn.Module):
     def __init__(self, config, load_emb=False, path=None, bias=True, total_tokens=63, depth=5, top_k=8, threshold=1.0):
         super().__init__()
@@ -575,6 +651,10 @@ class Model(nn.Module):
         with torch.no_grad():
             inputs_embeds = self.embed_tokens(input_ids)
             # inputs_embeds = inputs_embeds.detach()
+        
+
+        # COMPARE: 
+        
 
         # if std is not None:
         #     noise = torch.randn(inputs_embeds.size(),device=inputs_embeds.device) * std
@@ -607,6 +687,29 @@ class Model(nn.Module):
 
         # hidden_states=self.act(self.fc(torch.cat((inputs_embeds,hidden_states),dim=-1)))
         inputs_embeds = inputs_embeds.to(hidden_states.dtype)
+
+        # COMPARE:
+        # compare_from_file(inputs_embeds, "input_embds")
+
+        #### error!!!
+        # 这里要改为用 llama.cpp 推理中导出的特征拼接......
+
+        # input_embd : [1, n_tokens, embd_size] --> [1. n_tokens, 4096]
+        # hidden_states : [1, n_tokens, embd_size] --> [1. n_tokens, 2048]
+        # ??? 我在 llama.cpp 中是不是忘记拼接 prefill 阶段的特征了????
+
+        target_shape = inputs_embeds.shape  
+
+        feat_dir = "/mnt/c/EAGLE-merge/check_precision/cpp_hidden_feat"
+        feat_name = "0" + "_" + str(inputs_embeds.shape[1]) + ".bin"
+        data = np.fromfile(os.path.join(feat_dir, feat_name), dtype=np.float32)  
+
+        data = data.reshape(target_shape)
+
+        hidden_states = torch.tensor(data, dtype=torch.float32) # 将NumPy数组转换为PyTorch张量   
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        hidden_states = hidden_states.to(torch.float16).to(device)
+
         hidden_states = self.fc(torch.cat((inputs_embeds, hidden_states), dim=-1))
 
         all_hidden_states = () if output_hidden_states else None
@@ -684,7 +787,33 @@ class Model(nn.Module):
         else:
             out_hidden, past_key_values = self(hidden_states, input_ids=input_ids, use_cache=True)
         self.stable_kv = past_key_values
+
+
+        # [n_token, 4096]  --> [1, 4096]
         last_hidden = out_hidden[:, -1]
+
+        # last_hidden 
+        # last_headout
+        # 应该是因为 小模型 没有 head (当时没有导出......)
+        # [1, 4096] x [4096, vocab_size] --> [1, vocab_size]
+        # 导出小模型 output 之前的最后一个 特征，直接在这里进行逐个对比....
+
+        ########################  
+        # feat_dir = "/mnt/c/EAGLE-merge/check_precision/cpp_hidden_feat"
+        # feat_name = "eagle_before_output_54_times_3.bin" 
+        # tmp_data = np.fromfile(os.path.join(feat_dir, feat_name), dtype=np.float32)  
+        # tmp_data = tmp_data.reshape(last_hidden.shape)
+
+        # cpp_feat = torch.tensor(tmp_data, dtype=torch.float32) # 将NumPy数组转换为PyTorch张量   
+        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # cpp_feat = cpp_feat.to(torch.float16).to(device)
+
+        # cosine_similarity = F.cosine_similarity(cpp_feat.unsqueeze(0), last_hidden.unsqueeze(0))  
+        # print("Cosine Similarity:", cosine_similarity.item())  
+        ########################  
+
+        print(tensor_similarity(last_hidden, last_hidden))
+        compare_from_file(last_hidden, "eagle_before_output_54_times_3.bin")
 
         last_headout = head(last_hidden)
 

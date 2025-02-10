@@ -124,6 +124,9 @@ def get_model_answers(
 
     question = questions[0]
 
+    # question : 
+
+
     # warmup
     for _ in range(3):
         torch.manual_seed(0)
@@ -147,6 +150,8 @@ def get_model_answers(
                 tokenize=False,
                 add_generation_prompt=True,
             )
+            # question = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nCompose an engaging travel blog post about a recent trip to Hawaii, highlighting cultural experiences and must-see attractions.<|im_end|>\n<|im_start|>assistant<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nCompose an engaging travel blog post about a recent trip to Hawaii, highlighting cultural experiences and must-see attractions.<|im_end|>\n<|im_start|>assistant<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
             input_ids = tokenizer([prompt],add_special_tokens=False,).input_ids
 
             # try:
